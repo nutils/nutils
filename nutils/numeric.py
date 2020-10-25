@@ -106,16 +106,13 @@ def meshgrid(*args):
   'multi-dimensional meshgrid generalisation'
 
   args = [numpy.asarray(arg) for arg in args]
-  shape = [len(args)] + [arg.size for arg in args if arg.ndim]
-  dtype = int if all(isintarray(a) for a in args) else float
-  grid = numpy.empty(shape, dtype=dtype)
-  n = len(shape)-1
+  grid = numpy.empty(
+    shape = sum([arg.shape for arg in args], (len(args),)),
+    dtype = int if all(isintarray(a) for a in args) else float)
+  n = grid.ndim-1
   for i, arg in enumerate(args):
-    if arg.ndim:
-      n -= 1
-      grid[i] = arg[(slice(None),)+(numpy.newaxis,)*n]
-    else:
-      grid[i] = arg
+    n -= arg.ndim
+    grid[i] = arg[(...,)+(numpy.newaxis,)*n]
   assert n == 0
   return grid
 
