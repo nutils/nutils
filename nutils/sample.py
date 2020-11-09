@@ -275,9 +275,17 @@ class Sample(types.Singleton):
         Optional arguments for function evaluation.
     '''
 
-    datas = self.eval_sparse(funcs, arguments)
-    with log.iter.fraction('assembling', datas) as items:
-      return tuple(map(sparse.toarray, items))
+    funcs = self._prepare_funcs_eval(funcs)
+    retvals = [parallel.shzeros(func.shape, dtype=func.dtype) for func in funcs]
+
+    with evaluable.Tuple(evaluable.Tuple([i, *ind, f]).optimized_for_numpy for i, func in enumerate(funcs) for ind, f in evaluable.blocks(func)).session(graphviz) as eval, \
+         parallel.ctxrange('evaluating', self.nelems) as ielems:
+
+      for ielem in ielems:
+        for ifunc, *inds, data in eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=self.points[ielem], **arguments):
+          numpy.add.at(retvals[ifunc], numpy.ix_(*[ind.ravel() for ind in inds]), data.reshape([ind.size for ind in inds]))
+
+    return retvals
 
   @util.positional_only
   @util.single_or_multiple
