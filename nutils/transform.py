@@ -29,77 +29,20 @@ _ = numpy.newaxis
 
 ## TRANSFORM CHAIN OPERATIONS
 
-@types.frozenarray.lru
 def apply(chain, points):
-  for trans in reversed(chain):
-    points = trans.apply(points)
-  return points
-
-def n_ascending(chain):
-  # number of ascending transform items counting from root (0). this is a
-  # temporary hack required to deal with Bifurcate/Slice; as soon as we have
-  # proper tensorial topologies we can switch back to strictly ascending
-  # transformation chains.
-  for n, trans in enumerate(chain):
-    if trans.todims is not None and trans.todims < trans.fromdims:
-      return n
-  return len(chain)
+  return chain.apply(points)
 
 def canonical(chain):
-  # keep at lowest ndims possible; this is the required form for bisection
-  n = n_ascending(chain)
-  if n < 2:
-    return tuple(chain)
-  items = list(chain)
-  i = 0
-  while items[i].fromdims > items[n-1].fromdims:
-    swapped = items[i+1].swapdown(items[i])
-    if swapped:
-      items[i:i+2] = swapped
-      i -= i > 0
-    else:
-      i += 1
-  return tuple(items)
+  return chain.canonical
 
 def uppermost(chain):
-  # bring to highest ndims possible
-  n = n_ascending(chain)
-  if n < 2:
-    return tuple(chain)
-  items = list(chain)
-  i = n
-  while items[i-1].todims < items[0].todims:
-    swapped = items[i-2].swapup(items[i-1])
-    if swapped:
-      items[i-2:i] = swapped
-      i += i < n
-    else:
-      i -= 1
-  return tuple(items)
+  return chain.uppermost
 
 def promote(chain, ndims):
-  # swap transformations such that ndims is reached as soon as possible, and
-  # then maintained as long as possible (i.e. proceeds as canonical).
-  for i, item in enumerate(chain): # NOTE possible efficiency gain using bisection
-    if item.fromdims == ndims:
-      return canonical(chain[:i+1]) + uppermost(chain[i+1:])
-  return chain # NOTE at this point promotion essentially failed, maybe it's better to raise an exception
+  return chain.promote(ndims)
 
 def linearfrom(chain, fromdims):
-  todims = chain[0].todims if chain else fromdims
-  while chain and fromdims < chain[-1].fromdims:
-    chain = chain[:-1]
-  if not chain:
-    assert todims == fromdims
-    return numpy.eye(fromdims)
-  linear = numpy.eye(chain[-1].fromdims)
-  for transitem in reversed(uppermost(chain)):
-    linear = numpy.dot(transitem.linear, linear)
-    if transitem.todims == transitem.fromdims + 1:
-      linear = numpy.concatenate([linear, transitem.ext[:,_]], axis=1)
-  assert linear.shape[0] == todims
-  return linear[:,:fromdims] if linear.shape[1] >= fromdims \
-    else numpy.concatenate([linear, numpy.zeros((todims, fromdims-linear.shape[1]))], axis=1)
+  return chain.linearfrom(fromdims)
 
 ## TRANSFORM ITEMS
 
@@ -142,16 +85,16 @@ class Bifurcate(TransformItem):
 
   @types.apply_annotations
   def __init__(self, trans1:canonical, trans2:canonical):
-    fromdims = trans1[-1].fromdims + trans2[-1].fromdims
-    self.trans1 = trans1 + (Slice(0, trans1[-1].fromdims, fromdims),)
-    self.trans2 = trans2 + (Slice(trans1[-1].fromdims, fromdims, fromdims),)
-    super().__init__(todims=trans1[0].todims if trans1[0].todims == trans2[0].todims else None, fromdims=fromdims)
+    fromdims = trans1.fromdims + trans2.fromdims
+    self.trans1 = trans1 + (Slice(0, trans1.fromdims, fromdims),)
+    self.trans2 = trans2 + (Slice(trans1.fromdims, fromdims, fromdims),)
+    super().__init__(todims=trans1.todims if trans1.todims == trans2.todims else None, fromdims=fromdims)
 
   def __str__(self):
     return '{}<>{}'.format(self.trans1, self.trans2)
 
   def apply(self, points):
-    return apply(self.trans1, points), apply(self.trans2, points)
+    return self.trans1.apply(points), self.trans2.apply(points)
 
 class Matrix(TransformItem):
   '''Affine transformation :math:`x ↦ A x + b`, with :math:`A` an :math:`n×m` matrix, :math:`n≥m`
@@ -575,5 +518,129 @@ class Identifier(Identity):
 
   def __str__(self):
     return ':'.join(map(str, self._args))
+
+## TRANSFORM CHAIN
+
+class TransformChain:
+
+  def __init__(self, items, todims):
+    self._items = items
+    self.todims = todims
+    self.fromdims = items[-1].fromdims if items else todims
+    if items:
+      assert items[0].todims == todims
+
+  def __len__(self):
+    return len(self._items)
+
+  def __iter__(self):
+    return iter(self._items)
+
+  def __getitem__(self, index):
+    if isinstance(index, slice):
+      start, stop, step = index.indices(len(self._items))
+      if step != 1:
+        raise IndexError
+      if start < len(self._items):
+        return TransformChain(self._items[start:stop], self._items[start].todims)
+      else:
+        return TransformChain((), self.fromdims)
+    elif isinstance(index, int):
+      return self._items[index]
+    else:
+      raise IndexError
+
+  def __add__(self, other):
+    if isinstance(other, TransformChain):
+      assert self.fromdims == other.todims
+      return TransformChain(self._items+other._items, self.todims)
+    elif isinstance(other, TransformItem):
+      assert self.fromdims == other.todims
+      return TransformChain(self._items+(other,), self.todims)
+    else:
+      return NotImplemented
+
+  def __eq__(self, other):
+    return type(self) == type(other) and self._items == other._items and self.todims == other.todims
+
+  def __hash__(self):
+    return hash((self._items, self.todims))
+
+  def __repr__(self):
+    return repr(self._items) if self._items else 'TransformChain((), {})'.format(self.todims)
+
+  @types.frozenarray.lru
+  def apply(self, points):
+    for trans in reversed(self):
+      points = trans.apply(points)
+    return points
+
+  @property
+  def _n_ascending(self):
+    # number of ascending transform items counting from root (0). this is a
+    # temporary hack required to deal with Bifurcate/Slice; as soon as we have
+    # proper tensorial topologies we can switch back to strictly ascending
+    # transformation chains.
+    for n, trans in enumerate(self):
+      if trans.todims is not None and trans.todims < trans.fromdims:
+        return n
+    return len(self)
+
+  @property
+  def canonical(self):
+    # keep at lowest ndims possible; this is the required form for bisection
+    n = self._n_ascending
+    if n < 2:
+      return self
+    items = list(self._items)
+    i = 0
+    while items[i].fromdims > items[n-1].fromdims:
+      swapped = items[i+1].swapdown(items[i])
+      if swapped:
+        items[i:i+2] = swapped
+        i -= i > 0
+      else:
+        i += 1
+    return TransformChain(tuple(items), self.todims)
+
+  @property
+  def uppermost(self):
+    # bring to highest ndims possible
+    n = self._n_ascending
+    if n < 2:
+      return self
+    items = list(self._items)
+    i = n
+    while items[i-1].todims < items[0].todims:
+      swapped = items[i-2].swapup(items[i-1])
+      if swapped:
+        items[i-2:i] = swapped
+        i += i < n
+      else:
+        i -= 1
+    return TransformChain(tuple(items), self.todims)
+
+  def promote(self, ndims):
+    # swap transformations such that ndims is reached as soon as possible, and
+    # then maintained as long as possible (i.e. proceeds as canonical).
+    for i, item in enumerate(self): # NOTE possible efficiency gain using bisection
+      if item.fromdims == ndims:
+        return self[:i+1].canonical + self[i+1:].uppermost
+    return self # NOTE at this point promotion essentially failed, maybe it's better to raise an exception
+
+  def linearfrom(self, fromdims):
+    while self and fromdims < self.fromdims:
+      self = self[:-1]
+    if not self:
+      assert self.fromdims == fromdims
+      return numpy.eye(fromdims)
+    linear = numpy.eye(self.fromdims)
+    for transitem in reversed(uppermost(self)):
+      linear = numpy.dot(transitem.linear, linear)
+      if transitem.todims == transitem.fromdims + 1:
+        linear = numpy.concatenate([linear, transitem.ext[:,_]], axis=1)
+    assert linear.shape[0] == self.todims
+    return linear[:,:fromdims] if linear.shape[1] >= fromdims \
+      else numpy.concatenate([linear, numpy.zeros((self.todims, fromdims-linear.shape[1]))], axis=1)
 
 # vim:sw=2:sts=2:et
