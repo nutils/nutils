@@ -233,7 +233,7 @@ def replace(func=None, depthfirst=False, recursive=False, lru=4):
 class Evaluable(types.Singleton):
   'Base class'
 
-  __slots__ = '__args',
+  __slots__ = '__args', '__cached_value'
   __cache__ = 'dependencies', 'arguments', 'ordereddeps', 'dependencytree', 'optimized_for_numpy', '_loop_concatenate_deps'
 
   @types.apply_annotations
@@ -310,6 +310,11 @@ class Evaluable(types.Singleton):
   def eval(self, **evalargs):
     '''Evaluate function on a specified element, point set.'''
 
+    if self.isconstant:
+      try:
+        return self.__cached_value
+      except AttributeError:
+        evalargs = None # trigger an error if evalargs are used despite isconstant
     values = [evalargs]
     try:
       values.extend(op.evalf(*[values[i] for i in indices]) for op, indices in self.serialized)
@@ -318,6 +323,8 @@ class Evaluable(types.Singleton):
     except Exception as e:
       raise EvaluationError(self, values) from e
     else:
+      if self.isconstant:
+        self.__cached_value = values[-1]
       return values[-1]
 
   def eval_withtimes(self, times, **evalargs):
