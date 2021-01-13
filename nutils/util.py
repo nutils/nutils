@@ -455,4 +455,17 @@ class settable:
     finally:
       self.value = oldvalue
 
+try:
+  cached_property = functools.cached_property
+except AttributeError: # python < 3.8
+  def cached_property(func): # minimal backport
+    @functools.wraps(func)
+    def wrapped(self):
+      try:
+        val = self.__dict__[func.__name__]
+      except KeyError:
+        self.__dict__[func.__name__] = val = func(self)
+      return val
+    return property(wrapped)
+
 # vim:sw=2:sts=2:et
