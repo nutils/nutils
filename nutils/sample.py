@@ -64,7 +64,7 @@ class Sample(types.Singleton):
   points, and is typically used in combination with the "bezier" set.
   '''
 
-  __slots__ = 'nelems', 'transforms', 'points', 'ndims'
+  __slots__ = 'nelems', 'transforms', 'points', 'ndims', '_indices', '_arg_index'
   __cache__ = 'allcoords'
 
   @staticmethod
@@ -86,11 +86,16 @@ class Sample(types.Singleton):
     '''
 
     if index is None:
-      return _DefaultIndex(transforms, points)
+      indices = evaluable.Range(points.npoints)
+    elif len(index) != len(points):
+      raise ValueError('expected an `index` with {} items but got {}'.format(len(points), len(index)))
+    elif not all(len(i) == p.npoints for i, p in zip(index, points)):
+      raise ValueError('lengths of indices does not match number of points per element')
     else:
-      return _CustomIndex(transforms, points, index)
+      indices = evaluable.asarray(numpy.concatenate(index))
+    return Sample(transforms, points, indices)
 
-  def __init__(self, transforms, points):
+  def __init__(self, transforms, points, indices):
     '''
     parameters
     ----------
@@ -101,12 +106,15 @@ class Sample(types.Singleton):
         Points sequence.
     '''
 
-    assert len(transforms) >= 1
-    assert all(len(t) == len(points) for t in transforms)
-    self.nelems = len(transforms[0])
+    self.nelems = len(points)
+    self.ndims = points.ndims
+    assert len(transforms) >= 1 and all(len(t) == self.nelems and t.fromdims == self.ndims for t in transforms)
     self.transforms = transforms
     self.points = points
-    self.ndims = transforms[0].fromdims
+    self._indices = indices
+
+    self._arg_index = self.get_evaluable_indices(evaluable.Argument('_ielem', shape=(), dtype=int)).optimized_for_numpy
+    assert self._arg_index.ndim == 1
 
   def __repr__(self):
     return '{}.{}<{}D, {} elems, {} points>'.format(type(self).__module__, type(self).__qualname__, self.ndims, self.nelems, self.npoints)
@@ -119,11 +127,10 @@ class Sample(types.Singleton):
   def index(self):
     return tuple(map(self.getindex, range(self.nelems)))
 
-  @abc.abstractmethod
   def getindex(self, ielem):
     '''Return the indices of `Sample.points[ielem]` in results of `Sample.eval`.'''
 
-    raise NotImplementedError
+    return self._arg_index.eval(_ielem=ielem)
 
   def get_evaluable_indices(self, ielem):
     '''Return the evaluable indices for the given evaluable element index.
@@ -143,7 +150,10 @@ class Sample(types.Singleton):
     :meth:`getindex` : the non-evaluable equivalent
     '''
 
-    return evaluable.ElemwiseFromCallable(self.getindex, ielem, self.points.get_evaluable_coords(ielem).shape[:1], int)
+    length = self.points.get_evaluable_coords(ielem).shape[0]
+    offsets = evaluable._SizesToOffsets(evaluable.loop_concatenate(evaluable.InsertAxis(length, 1), ielem, self.nelems))
+    offset = evaluable.get(offsets, 0, ielem)
+    return evaluable.take(self._indices, evaluable.Range(length, offset), 0)
 
   @util.positional_only
   @util.single_or_multiple
@@ -276,7 +286,7 @@ class Sample(types.Singleton):
     row defines a simplex by mapping vertices into the list of points.
     '''
 
-    return numpy.concatenate([self.getindex(ielem).take(points.tri) for ielem, points in enumerate(self.points)])
+    return self.points.tri
 
   @property
   def hull(self):
@@ -288,7 +298,7 @@ class Sample(types.Singleton):
     triangulations originating from separate elements are disconnected.
     '''
 
-    return numpy.concatenate([self.getindex(ielem).take(points.hull) for ielem, points in enumerate(self.points)])
+    return self.points.hull
 
   def subset(self, mask):
     '''Reduce the number of points.
@@ -314,50 +324,6 @@ class Sample(types.Singleton):
     return Sample.new(transforms, self.points.take(selection))
 
 strictsample = types.strict[Sample]
-
-class _DefaultIndex(Sample):
-
-  __slots__ = ()
-  __cache__ = 'offsets'
-
-  @property
-  def offsets(self):
-    return numpy.cumsum([0]+[p.npoints for p in self.points])
-
-  def getindex(self, ielem):
-    return numpy.arange(self.offsets[ielem], self.offsets[ielem+1])
-
-  @property
-  def tri(self):
-    return self.points.tri
-
-  @property
-  def hull(self):
-    return self.points.hull
-
-  def get_evaluable_indices(self, ielem):
-    npoints = self.points.get_evaluable_coords(ielem).shape[0]
-    offsets = evaluable._SizesToOffsets(evaluable.loop_concatenate(evaluable.InsertAxis(npoints, 1), ielem, self.nelems))
-    return evaluable.Range(npoints, evaluable.get(offsets, 0, ielem))
-
-class _CustomIndex(Sample):
-
-  __slots__ = '_index'
-
-  def __init__(self, transforms, points, index):
-    self._index = index
-    if len(index) != len(points):
-      raise ValueError('expected an `index` with {} items but got {}'.format(len(points), len(index)))
-    if not all(len(i) == p.npoints for i, p in zip(self._index, points)):
-      raise ValueError('lengths of indices does not match number of points per element')
-    super().__init__(transforms, points)
-
-  @property
-  def index(self):
-    return self._index
-
-  def getindex(self, ielem):
-    return self._index[ielem]
 
 @types.apply_annotations
 def eval_integrals(*integrals: types.tuple, **arguments:argdict):
