@@ -2327,23 +2327,32 @@ class Sampled(Array):
     assert numpy.equal(points, expect).all(), 'illegal point set'
     return numpy.eye(len(points), dtype=int)
 
-class Elemwise(Array):
-
-  __slots__ = 'data',
-
-  @types.apply_annotations
-  def __init__(self, data:types.tuple[types.frozenarray], index:asarray, dtype:asdtype):
-    self.data = data
-    shape = get([d.shape for d in data], 0, index)
-    super().__init__(args=[index], shape=shape, dtype=dtype)
-
-  def evalf(self, index):
-    assert index.ndim == 0
-    return self.data[index].astype(self.dtype, copy=False, casting='same_kind')
-
-  def _simplified(self):
-    if all(map(numeric.isint, self.shape)) and all(self.data[0] == data for data in self.data[1:]):
-      return Constant(self.data[0])
+@types.apply_annotations
+def Elemwise(data:types.tuple[types.frozenarray], index:asarray, dtype:asdtype, assume_unique=False):
+  ndim = data[0].ndim
+  if assume_unique:
+    unique = data # indices will not be used
+  else:
+    unique, indices = util.unique(data)
+  if len(unique) == 1:
+    return Constant(unique[0])
+  shapes = numpy.empty([len(data), ndim], dtype=int)
+  for i, d in enumerate(data):
+    shapes[i] = d.shape
+  shape = [Take(s, index).simplified for s in shapes.T] # use original index to avoid potential inconsistencies with other arrays
+  if len(unique) < len(data):
+    index = Take(types.frozenarray(indices, copy=False), index)
+  concat = types.frozenarray(numpy.concatenate([d.ravel() for d in unique]), dtype=dtype, copy=False)
+  if ndim == 0:
+    return Take(concat, index)
+  cumprod = shape.copy()
+  for i in reversed(range(ndim-1)):
+    cumprod[i] *= cumprod[i+1] # work backwards so that the shape check matches in Unravel
+  offsets = types.frozenarray(numpy.cumsum([0] + [d.size for d in unique[:-1]]), copy=False)
+  elemwise = Take(concat, Range(cumprod[0], Take(offsets, index)))
+  for i in range(ndim-1):
+    elemwise = Unravel(elemwise, shape[i], cumprod[i+1])
+  return elemwise
 
 class ElemwiseFromCallable(Array):
 
