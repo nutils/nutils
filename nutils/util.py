@@ -455,6 +455,22 @@ class settable:
     finally:
       self.value = oldvalue
 
+def unique(items):
+  '''Deduplicate items in sequence.
+
+  Return a tuple `(unique, indices)` such that `items[i] == unique[indices[i]]`
+  and `unique` does not contain duplicate items.
+  '''
+
+  unique = collections.OrderedDict()
+  indices = numpy.empty(len(items), dtype=int)
+  for i, item in enumerate(items):
+    try:
+      indices[i] = unique[item]
+    except KeyError:
+      indices[i] = unique[item] = len(unique)
+  return tuple(unique.keys()), indices
+
 try:
   cached_property = functools.cached_property
 except AttributeError: # python < 3.8
